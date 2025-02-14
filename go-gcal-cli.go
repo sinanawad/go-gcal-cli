@@ -26,6 +26,9 @@ import (
 	"os"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/lipgloss/table"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/calendar/v3"
@@ -87,6 +90,130 @@ func saveToken(path string, token *oauth2.Token) {
 	json.NewEncoder(f).Encode(token)
 }
 
+type model struct {
+	events []*calendar.Event
+}
+
+func (m model) Init() tea.Cmd {
+	return nil
+}
+
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.Type {
+		case tea.KeyCtrlC:
+			return m, tea.Quit
+		}
+	}
+	return m, nil
+}
+
+const (
+	// ClientSecretPath is the path to the client secret file.
+	startedMeeting = "+"
+	nextMeeting    = ">"
+)
+
+func prepareTableRows(events calendar.Events) [][]string {
+
+	var rows [][]string
+	var timeNow = time.Now()
+	for _, item := range events.Items {
+		date := item.Start.DateTime
+		if date == "" { // remove all day events
+			continue
+		}
+		startTime, _ := time.Parse(time.RFC3339, item.Start.DateTime)
+		endTime, _ := time.Parse(time.RFC3339, item.End.DateTime)
+
+		if startTime == endTime {
+			continue
+		}
+
+		if timeNow.After(endTime) {
+			continue
+		}
+
+		if endTime.Sub(startTime) > 24*time.Hour {
+			continue
+		}
+
+		if timeNow.After(startTime) && timeNow.Before(endTime) {
+			item.Summary = startedMeeting + item.Summary
+		} else if startTime.Sub(timeNow) < 10*time.Minute {
+			item.Summary = nextMeeting + item.Summary
+		}
+
+		if len(item.Summary) > 57 {
+			item.Summary = item.Summary[:57] + "..."
+		}
+
+		rows = append(rows, []string{item.Summary, startTime.Format("15:04"), endTime.Format("15:04"), item.HangoutLink})
+		if len(rows) > 5 {
+			return rows
+		}
+	}
+	return rows
+
+}
+
+func (m model) View() string {
+	var output string
+
+	header := lipgloss.NewStyle().Align(lipgloss.Center).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("0")).Render
+	oldStyle := lipgloss.NewStyle().Align(lipgloss.Center).Foreground(lipgloss.Color("9")).Background(lipgloss.Color("0")).Render
+	newStyle := lipgloss.NewStyle().Align(lipgloss.Center).Foreground(lipgloss.Color("10")).Background(lipgloss.Color("0")).Render
+	currentStyle := lipgloss.NewStyle().Align(lipgloss.Center).Foreground(lipgloss.Color("2")).Background(lipgloss.Color("0")).Render
+
+	output += header(fmt.Sprintf("%-50s %-5s-%-5s %-20s\n", "Summary", "Start", "End", "Hangout Link"))
+
+	for i, event := range m.events {
+		startTime, _ := time.Parse(time.RFC3339, event.Start.DateTime)
+		endTime, _ := time.Parse(time.RFC3339, event.End.DateTime)
+		now := time.Now()
+
+		if event.Start.DateTime == "" {
+			continue
+		}
+
+		style := oldStyle
+		if startTime.Before(now) {
+			style = oldStyle
+		} else if endTime.Before(now) {
+			style = newStyle
+		} else {
+			style = currentStyle
+		}
+
+		if len(event.Summary) > 47 {
+			event.Summary = event.Summary[:47] + "..."
+		}
+		output += style(fmt.Sprintf("%-50s %-5s-%-5s %-20s\n", event.Summary, startTime.Format("15:04"), endTime.Format("15:04"), event.HangoutLink))
+
+		//		output += style.Render(fmt.Sprintf("%-30s %-20s %-20s %-50s\n", event.Summary, startTime.Format("15:04"), endTime.Format("15:04"), event.HangoutLink))
+		if i == 10 {
+			break
+		}
+	}
+
+	return output
+}
+
+func runBubbleTea(events []*calendar.Event) {
+	p := tea.NewProgram(model{events: events})
+	if _, err := p.Run(); err != nil {
+		fmt.Printf("Error running program: %v\n", err)
+	}
+}
+
+var (
+	HeaderStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#FAFAFA")).Background(lipgloss.Color("0"))
+	NormalStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("7")).Background(lipgloss.Color("0"))
+	StartedRowStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#62D9F5")).Background(lipgloss.Color("#0000FF"))
+	NextRowStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#00FF00"))
+)
+
 func main() {
 	ctx := context.Background()
 	b, err := os.ReadFile("go-gcal-cli-credentials.json")
@@ -106,14 +233,18 @@ func main() {
 		log.Fatalf("Unable to retrieve Calendar client: %v", err)
 	}
 
-	t := time.Now().Format(time.RFC3339)
+	t := time.Now().AddDate(0, 0, -1).Format(time.RFC3339)
+
 	tMax := time.Now().AddDate(0, 0, 1).Format(time.RFC3339)
+	//events, err := srv.Events.List("primary").ShowDeleted(false).SingleEvents(true).TimeMin(t).TimeMax(tMax).OrderBy("startTime").Do()
 	events, err := srv.Events.List("primary").ShowDeleted(false).SingleEvents(true).TimeMin(t).TimeMax(tMax).OrderBy("startTime").Do()
 
 	if err != nil {
 		log.Fatalf("Unable to retrieve next ten of the user's events: %v", err)
 	}
-	fmt.Println("Upcoming events:")
+
+	//style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")).Background(lipgloss.Color("0")).Render
+
 	if len(events.Items) == 0 {
 		fmt.Println("No upcoming events found.")
 	} else {
@@ -123,8 +254,51 @@ func main() {
 				continue
 				//date = item.Start.Date
 			}
-			fmt.Printf("%v (%v) %v\n", item.Summary, date, item.HangoutLink)
+			//fmt.Printf("%v (%v) %v\n", item.Summary, date, item.HangoutLink)
+			startTime, _ := time.Parse(time.RFC3339, item.Start.DateTime)
+			endTime, _ := time.Parse(time.RFC3339, item.End.DateTime)
+
+			if startTime == endTime {
+				continue
+			}
+
+			if len(item.Summary) > 47 {
+				item.Summary = item.Summary[:47] + "..."
+			}
+
+			//		fmt.Printf("%-50s %-5s-%-5s %-20s\n", item.Summary, startTime.Format("15:04"), endTime.Format("15:04"), item.HangoutLink)
+			//fmt.Printf(style(fmt.Sprintf("%v\t%v\t%v\t%v\n", item.Summary, startTime.Format("15:04"), endTime.Format("15:04"), item.HangoutLink)))
 		}
 	}
+
+	rows := prepareTableRows(*events)
+
+	tbl := table.New().
+		Border(lipgloss.NormalBorder()).
+		BorderStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("99"))).
+		StyleFunc(func(row, col int) lipgloss.Style {
+
+			if row == -1 {
+				return HeaderStyle
+			}
+
+			if row > -1 {
+				if len(rows[row][0]) > 0 && rows[row][0][0] == nextMeeting[0] {
+					return NextRowStyle
+				}
+
+				if len(rows[row][0]) > 0 && rows[row][0][0] == startedMeeting[0] {
+					return StartedRowStyle
+				}
+
+			}
+
+			return NormalStyle
+		}).
+		Headers("Summary", time.Now().Format("15:04"), "End", "Link").
+		Rows(rows...)
+
+	fmt.Println(tbl.Render())
+	//runBubbleTea(events.Items)
 
 }
