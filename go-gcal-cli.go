@@ -107,8 +107,9 @@ func main() {
 	}
 
 	t := time.Now().Format(time.RFC3339)
-	events, err := srv.Events.List("primary").ShowDeleted(false).
-		SingleEvents(true).TimeMin(t).MaxResults(10).OrderBy("startTime").Do()
+	tMax := time.Now().AddDate(0, 0, 1).Format(time.RFC3339)
+	events, err := srv.Events.List("primary").ShowDeleted(false).SingleEvents(true).TimeMin(t).TimeMax(tMax).OrderBy("startTime").Do()
+
 	if err != nil {
 		log.Fatalf("Unable to retrieve next ten of the user's events: %v", err)
 	}
@@ -119,11 +120,11 @@ func main() {
 		for _, item := range events.Items {
 			date := item.Start.DateTime
 			if date == "" {
-				date = item.Start.Date
+				continue
+				//date = item.Start.Date
 			}
-			fmt.Printf("%v (%v)\n", item.Summary, date)
+			fmt.Printf("%v (%v) %v\n", item.Summary, date, item.HangoutLink)
 		}
 	}
-}
 
-// [END calendar_quickstart]
+}
